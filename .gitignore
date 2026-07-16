@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+
+# Build output
+.tsbuild/
+*.tsbuildinfo
+
+# Local environment overrides (real secrets never committed; see .env.example)
+.env
+.env.local
+
+# WDIO / Appium logs
+logs/
+*.log
+appium.log
+
+# Reports: the committed proof-of-run is the generated HTML under
+# reports/allure-report/ (tracked explicitly). Ignore the raw per-run results.
+reports/allure-results/
+
+# OS noise
+.DS_Store
+
+# Raw UI hierarchy dumps captured during locator investigation (kept in doc/ if curated)
+tmp/
