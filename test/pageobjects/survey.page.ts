@@ -1,3 +1,4 @@
+import { driver } from '@wdio/globals';
 import { BasePage } from './base.page.js';
 
 export interface SurveyDismissResult {
@@ -57,38 +58,39 @@ export class SurveyPage extends BasePage {
     let dismissedCount = 0;
 
     for (let iteration = 1; iteration <= maxIterations; iteration++) {
-      // Success condition first: zero-survey accounts return immediately.
+      // Clear any non-survey interstitials (RTM welcome / Health Connect) that
+      // can sit in front of Home alongside, or instead of, pending surveys.
+      await this.dismissInterstitials();
+
+      // Success condition: zero-survey accounts return as soon as Home is up.
       if (await isHomeReady()) {
         return { dismissedCount, iterations: iteration - 1, reachedHome: true };
       }
 
-      const control = await this.firstVisible(this.dismissControlCandidates, 4000);
-
-      if (!control) {
-        // Neither Home nor a recognised survey control. Give the UI one more
-        // settle-and-recheck before declaring the flow stuck.
-        if (await isHomeReady()) {
-          return { dismissedCount, iterations: iteration, reachedHome: true };
-        }
-        throw new Error(
-          `Survey handler stuck after ${dismissedCount} dismissal(s): no known dismiss ` +
-            `control is visible and Home was not reached. On screen: ${await this.describeScreen()}`,
-        );
+      const control = await this.firstVisible(this.dismissControlCandidates, 3000);
+      if (control) {
+        await this.tap(control, `survey dismiss control [${control}]`);
+        dismissedCount++;
+        // Confirm progress: the tapped control should detach. Tolerate re-render.
+        await this.waitForGone(control, 'dismissed survey control', 8000).catch(() => undefined);
+        continue;
       }
 
-      await this.tap(control, `survey dismiss control [${control}]`);
-      dismissedCount++;
-
-      // Confirm the dismissal made progress: the tapped control should detach.
-      // Tolerate re-render (a new survey may reuse the same control) — the loop's
-      // top-of-iteration Home check and the iteration bound are the real guards.
-      await this.waitForGone(control, 'dismissed survey control', 8000).catch(() => undefined);
+      // Neither Home nor a recognised survey control yet. This is often a
+      // transient (post-login loading, or an interstitial mid-render), so settle
+      // briefly and retry rather than failing immediately. The iteration bound is
+      // the real guard against a truly stuck screen.
+      await driver.pause(1500);
     }
 
+    // Exhausted the iteration budget without reaching Home.
+    if (await isHomeReady()) {
+      return { dismissedCount, iterations: maxIterations, reachedHome: true };
+    }
     throw new Error(
       `Survey dismissal did not converge after ${maxIterations} iterations ` +
-        `(possible repeatedly-reappearing/blocking survey). Dismissed ${dismissedCount} so far. ` +
-        `On screen: ${await this.describeScreen()}`,
+        `(Home not reached; possible repeatedly-reappearing survey or unexpected screen). ` +
+        `Dismissed ${dismissedCount} so far. On screen: ${await this.describeScreen()}`,
     );
   }
 }

@@ -1,90 +1,128 @@
+import { $ } from '@wdio/globals';
 import { BasePage } from './base.page.js';
 
 /**
- * Pain score / daily check-in flow.
+ * Pain score / daily check-in survey.
  *
- * [PROVISIONAL] The exact pain-input control (numeric 0–10 buttons vs. a slider)
- * and the number of mandatory follow-up questions are not yet confirmed on this
- * build. The method therefore:
- *   - selects the pain value by its visible number, then
- *   - advances through any follow-up steps by clicking a bounded sequence of
- *     "next/continue/submit" affordances until submission is confirmed.
- * Both the value selector and the advance controls are centralised for a
- * one-line correction after the first instrumented run.
+ * [VERIFIED 2026-07-17] Flow mapped on app v8.2.0 / HONOR X6c:
+ *   intro ("Tap to start") -> pain rating (step 2/4) -> strength & energy
+ *   (step 3/4) -> disclaimer + Submit (4/4) -> RTM welcome popup.
+ *
+ * Unlike the Flutter shell, the check-in activity exposes stable resource-ids
+ * (e.g. survey.vas.seekbar, survey.vas.value_label). Pain is set by tapping the
+ * seekbar at the scale-number's x and the seekbar's own centre y — no hardcoded
+ * pixel offsets. Strength is dragged by a fraction of window width.
  */
 export class CheckInPage extends BasePage {
-  private painValue(value: number): string[] {
-    return [this.byText(String(value)), this.byDescContains(`pain ${value}`)];
+  private get startButton(): string {
+    return this.byText('Tap to start');
+  }
+  private get painQuestion(): string {
+    return this.byTextContains('How much pain');
+  }
+  private get painSeekbar(): string {
+    return this.byId('survey.vas.seekbar');
+  }
+  private get painValueLabel(): string {
+    return this.byId('survey.vas.value_label');
+  }
+  private painNumber(value: number): string {
+    // Prefer the dedicated min_label id for "1"; other values use scale text.
+    if (value === 1) return this.byId('survey.vas.min_label');
+    if (value === 10) return this.byId('survey.vas.max_label');
+    return this.byTextInstance(String(value), 0);
+  }
+  private get strengthBadgeUnset(): string {
+    return this.byText('-'); // value_label before a value is chosen
+  }
+  private get strengthHandle(): string {
+    return this.byId('survey.vas.handle');
+  }
+  private get nextButton(): string {
+    return this.byText('Next');
+  }
+  private get submitButton(): string {
+    return this.byText('Submit');
   }
 
-  private get advanceCandidates(): string[] {
-    return [
-      this.byText('Submit'),
-      this.byText('Save'),
-      this.byText('Done'),
-      this.byText('Finish'),
-      this.byText('Continue'),
-      this.byText('Next'),
-      this.byText('Confirm'),
-    ];
+  /** Read the pain slider's current value from survey.vas.value_label. */
+  private async readPainBadge(): Promise<string | null> {
+    if (await this.isVisible(this.painValueLabel, 2500)) {
+      const text = (await $(this.painValueLabel).getText()).trim();
+      return text.length > 0 ? text : null;
+    }
+    // Fallback for builds without the id: first digit in the upper ~40% of the screen.
+    const { height } = await this.windowSize();
+    const badge = (await this.pageNodes()).find(
+      (n) => /^\d+$/.test(n.text) && n.cy > height * 0.08 && n.cy < height * 0.4,
+    );
+    return badge ? badge.text : null;
   }
 
-  private get confirmationCandidates(): string[] {
-    return [
-      this.byTextContains('Thank you'),
-      this.byTextContains('recorded'),
-      this.byTextContains('submitted'),
-      this.byTextContains('completed'),
-    ];
+  /** Open the survey's first rating step. */
+  async start(): Promise<void> {
+    await this.tap(this.startButton, 'the check-in "Tap to start" button', 30000);
+    await this.waitForVisible(this.painQuestion, 'the pain rating question', 20000);
   }
 
-  /** Wait until the check-in screen is up (the target pain value is selectable). */
-  async waitUntilLoaded(value: number, timeout = 20000): Promise<void> {
-    const found = await this.firstVisible(this.painValue(value), timeout);
-    if (!found) {
-      throw new Error(
-        `Check-in screen did not present a selectable pain value "${value}". ` +
-          `On screen: ${await this.describeScreen()}`,
-      );
+  /**
+   * Set the pain score by tapping the seekbar track at the scale number's x
+   * (y = seekbar centre — derived from the live element, not a pixel constant).
+   * Confirms via value_label; retries once on mismatch, then fails clearly.
+   */
+  async setPainScore(value: number): Promise<void> {
+    const numberSelector = this.painNumber(value);
+    await this.waitForVisible(numberSelector, `pain scale number "${value}"`);
+    await this.waitForVisible(this.painSeekbar, 'the pain seekbar', 10000);
+
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const numberCentre = await this.centerOf(numberSelector);
+      const seekbarCentre = await this.centerOf(this.painSeekbar);
+      await this.tapAt(numberCentre.x, seekbarCentre.y);
+
+      const shown = await this.readPainBadge();
+      if (shown === String(value)) return;
+      if (attempt === 2) {
+        throw new Error(
+          `Pain slider did not settle on "${value}" (badge showed "${shown ?? 'none'}"). ` +
+            `On screen: ${await this.describeScreen()}`,
+        );
+      }
     }
   }
 
   /**
-   * Select the given pain score and submit the check-in.
-   * @param value pain score to record (the exercise requires 1).
-   * @param maxSteps bound on follow-up "next/submit" taps so a mandatory-question
-   *   flow cannot loop forever.
+   * Set the strength & energy slider to any value (task fixes only pain).
+   * Drags the handle by ~25% of window width — scales across densities.
    */
-  async completeCheckIn(value: number, maxSteps = 6): Promise<void> {
-    await this.waitUntilLoaded(value);
+  private async setStrengthAnyValue(): Promise<void> {
+    if (!(await this.isVisible(this.strengthBadgeUnset, 4000))) return; // already set / not present
 
-    const valueSelector = await this.firstVisible(this.painValue(value), 5000);
-    if (!valueSelector) {
-      throw new Error(`Pain value "${value}" not selectable. On screen: ${await this.describeScreen()}`);
-    }
-    await this.tap(valueSelector, `pain score value "${value}"`);
+    const { width } = await this.windowSize();
+    const handleSelector = (await this.isVisible(this.strengthHandle, 2000))
+      ? this.strengthHandle
+      : this.strengthBadgeUnset;
+    const knob = await this.centerOf(handleSelector);
+    await this.dragTo(knob.x, knob.y, knob.x + width * 0.25, knob.y, 1000);
+    await this.waitForGone(this.strengthBadgeUnset, 'unset strength value', 6000).catch(() => undefined);
+  }
 
-    // Advance through the flow until a confirmation appears or we run out of steps.
-    for (let step = 0; step < maxSteps; step++) {
-      if (await this.isAnyVisible(this.confirmationCandidates, 1500)) return;
-      const advance = await this.firstVisible(this.advanceCandidates, 4000);
-      if (!advance) {
-        // No further control and no confirmation — treat as submitted only if a
-        // confirmation is (eventually) visible; otherwise fail clearly.
-        if (await this.isAnyVisible(this.confirmationCandidates, 3000)) return;
-        throw new Error(
-          `Check-in did not reach a submit/confirmation after selecting "${value}" ` +
-            `(${step} step(s)). On screen: ${await this.describeScreen()}`,
-        );
-      }
-      await this.tap(advance, `check-in advance control [${advance}]`);
-    }
+  /**
+   * Complete the whole check-in with the given pain value and submit it.
+   * Each step is explicitly waited; a missing control fails the suite clearly.
+   */
+  async completeCheckIn(value: number): Promise<void> {
+    await this.start();
 
-    if (!(await this.isAnyVisible(this.confirmationCandidates, 3000))) {
-      throw new Error(
-        `Check-in submission not confirmed after ${maxSteps} steps. ` +
-          `On screen: ${await this.describeScreen()}`,
-      );
-    }
+    await this.setPainScore(value);
+    await this.tap(this.nextButton, 'Next (after pain rating)');
+
+    await this.setStrengthAnyValue();
+    await this.tap(this.nextButton, 'Next (after strength & energy)');
+
+    await this.tap(this.submitButton, 'Submit (check-in)', 15000);
+
+    // The RTM welcome popup typically follows submission.
+    await this.dismissInterstitials();
   }
 }

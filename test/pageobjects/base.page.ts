@@ -48,6 +48,11 @@ export abstract class BasePage {
     return `android=new UiSelector().textMatches("${this.esc(pattern)}")`;
   }
 
+  /** Nth element with exactly this text (0-based) — disambiguates repeats. */
+  protected byTextInstance(text: string, instance: number): string {
+    return `android=new UiSelector().text("${this.esc(text)}").instance(${instance})`;
+  }
+
   /** Accessibility description (content-desc), exact. */
   protected byDesc(desc: string): string {
     return `android=new UiSelector().description("${this.esc(desc)}")`;
@@ -58,9 +63,32 @@ export abstract class BasePage {
     return `android=new UiSelector().descriptionContains("${this.esc(desc)}")`;
   }
 
-  /** Nth element of a widget class (0-based). Last resort for unlabelled inputs. */
+  /** Nth element of a widget class (0-based). Used for unlabelled Flutter inputs. */
   protected byClassInstance(className: string, instance: number): string {
     return `android=new UiSelector().className("${className}").instance(${instance})`;
+  }
+
+  /** Android resource-id (exact). Prefer this when the hierarchy exposes one. */
+  protected byId(resourceId: string): string {
+    return `android=new UiSelector().resourceId("${this.esc(resourceId)}")`;
+  }
+
+  /**
+   * A clickable container that has a descendant with the given text. The app
+   * wraps tappable controls in a clickable View around a non-clickable label
+   * (e.g. the "Login" button vs. the "Login" heading), so matching the clickable
+   * ancestor by its child text is more precise than matching the text alone.
+   */
+  protected byClickableWithText(text: string): string {
+    return (
+      `android=new UiSelector().clickable(true)` +
+      `.childSelector(new UiSelector().text("${this.esc(text)}"))`
+    );
+  }
+
+  /** Current window size — used to derive relative geometry instead of magic pixels. */
+  protected async windowSize(): Promise<{ width: number; height: number }> {
+    return driver.getWindowSize();
   }
 
   // --- Interactions (all explicitly waited) ----------------------------------
@@ -98,7 +126,16 @@ export abstract class BasePage {
     await element.click();
   }
 
-  /** Type into a field after waiting for it. Clears first for determinism. */
+  /**
+   * Type into a field after waiting for it.
+   *
+   * The app's text fields are cross-toolkit proxies: UiAutomator2's `setValue`
+   * sets the text then reads it back to verify, and the proxy doesn't report the
+   * value, which throws "invalid element state" even though the text was
+   * accepted. We therefore focus the field with a click and type through the
+   * keyboard (`driver.keys`), which does not do that readback. The field is
+   * cleared first for determinism.
+   */
   async type(selector: string, value: string, reason: string, timeout = this.timeout): Promise<void> {
     const element = this.el(selector);
     await element.waitForDisplayed({
@@ -107,7 +144,16 @@ export abstract class BasePage {
     });
     await element.click();
     await element.clearValue().catch(() => undefined);
-    await element.setValue(value);
+    await driver.keys(value);
+  }
+
+  /** Dismiss the soft keyboard if it is showing (so it can't cover a control). */
+  async hideKeyboardIfShown(): Promise<void> {
+    try {
+      if (await driver.isKeyboardShown()) await driver.hideKeyboard();
+    } catch {
+      /* not all states support this; safe to ignore */
+    }
   }
 
   /**
@@ -142,6 +188,129 @@ export abstract class BasePage {
       if (await this.isVisible(selector, timeout)) return selector;
     }
     return null;
+  }
+
+  // --- Coordinate / gesture helpers ------------------------------------------
+  // The app's pain/energy inputs are custom slider widgets that expose no
+  // accessible sub-elements, so they can only be driven positionally. These
+  // helpers keep that coordinate work in one place; callers derive coordinates
+  // from real element positions (centerOf) rather than hardcoding pixels.
+
+  /** Centre point of an element, in driver pixel coordinates. */
+  async centerOf(selector: string): Promise<{ x: number; y: number }> {
+    const element = this.el(selector);
+    await element.waitForExist({ timeout: this.timeout });
+    const loc = await element.getLocation();
+    const size = await element.getSize();
+    return { x: Math.round(loc.x + size.width / 2), y: Math.round(loc.y + size.height / 2) };
+  }
+
+  /** Single tap at an absolute coordinate (W3C touch pointer). */
+  async tapAt(x: number, y: number): Promise<void> {
+    await driver
+      .action('pointer', { parameters: { pointerType: 'touch' } })
+      .move({ x: Math.round(x), y: Math.round(y) })
+      .down()
+      .pause(60)
+      .up()
+      .perform();
+  }
+
+  /** Press-and-drag between two coordinates (W3C touch pointer). */
+  async dragTo(x1: number, y1: number, x2: number, y2: number, durationMs = 900): Promise<void> {
+    await driver
+      .action('pointer', { parameters: { pointerType: 'touch' } })
+      .move({ x: Math.round(x1), y: Math.round(y1) })
+      .down()
+      .pause(150)
+      .move({ duration: durationMs, x: Math.round(x2), y: Math.round(y2) })
+      .pause(150)
+      .up()
+      .perform();
+  }
+
+  /** Tap a selector only if it is currently present; returns whether it acted. */
+  async tapIfPresent(selector: string, timeout = 1500): Promise<boolean> {
+    if (await this.isVisible(selector, timeout)) {
+      await this.el(selector).click();
+      return true;
+    }
+    return false;
+  }
+
+  // --- Page-source inspection ------------------------------------------------
+  // Used for positional reads the accessibility tree can't give us by selector:
+  // the slider's current value badge, a stat value sitting above its label, and
+  // disambiguating bottom-nav labels from same-named headers.
+
+  /** Parse the current page source into flat nodes with text/desc/bounds. */
+  protected async pageNodes(): Promise<
+    Array<{ text: string; desc: string; y1: number; cx: number; cy: number }>
+  > {
+    const src = await driver.getPageSource();
+    const nodes: Array<{ text: string; desc: string; y1: number; cx: number; cy: number }> = [];
+    const tagRe = /<[\w.$]+\s([^>]*?)\/?>/g;
+    let m: RegExpExecArray | null;
+    while ((m = tagRe.exec(src)) !== null) {
+      const attrs = m[1];
+      const b = /bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/.exec(attrs);
+      if (!b) continue;
+      const text = (/\btext="([^"]*)"/.exec(attrs) ?? ['', ''])[1];
+      const desc = (/content-desc="([^"]*)"/.exec(attrs) ?? ['', ''])[1];
+      const [x1, y1, x2, y2] = [b[1], b[2], b[3], b[4]].map(Number);
+      nodes.push({ text, desc, y1, cx: (x1 + x2) / 2, cy: (y1 + y2) / 2 });
+    }
+    return nodes;
+  }
+
+  /**
+   * Tap a bottom-navigation item by label.
+   * Disambiguated from same-named headers by requiring the node in the bottom
+   * ~15% of the window (not a hardcoded y like 1380 — that only fits 720x1604).
+   */
+  async tapBottomNav(label: string): Promise<void> {
+    const { height } = await this.windowSize();
+    const navBandTop = height * 0.85;
+    const nav = (await this.pageNodes()).find((n) => n.text === label && n.cy > navBandTop);
+    if (!nav) {
+      throw new Error(`Bottom-nav item "${label}" not found. On screen: ${await this.describeScreen()}`);
+    }
+    await this.tapAt(nav.cx, nav.cy);
+  }
+
+  /**
+   * Dismiss known non-blocking interstitials that can appear at various points
+   * (independently of the pending-survey flow): the Remote Therapeutic
+   * Monitoring welcome popup and the Health Connect onboarding chain. Chooses
+   * the privacy-preserving option ("Not now") and is bounded so it can never
+   * loop forever. Returns how many popups it cleared.
+   */
+  async dismissInterstitials(maxRounds = 6): Promise<number> {
+    let dismissed = 0;
+    for (let round = 0; round < maxRounds; round++) {
+      const src = await driver.getPageSource();
+      let acted = false;
+
+      if (src.includes('Remote Therapeutic Monitoring')) {
+        acted = await this.tapIfPresent(this.byText('OK'), 1500);
+      } else if (
+        src.includes('Health Connect') ||
+        src.includes('Permission required') ||
+        src.includes('Step data access')
+      ) {
+        for (const label of ['Not now', 'NOT NOW', 'OK']) {
+          if (await this.tapIfPresent(this.byText(label), 1200)) {
+            acted = true;
+            break;
+          }
+        }
+      }
+
+      if (!acted) break;
+      dismissed++;
+      await driver.pause(700); // brief settle for the next popup/screen to render
+    }
+    return dismissed;
   }
 
   /** Scroll a scrollable container until an element with the given text is shown. */

@@ -136,13 +136,14 @@ wdio.conf.ts          Runner config, Appium service, bounded timeouts, Allure re
 
 - **Locator strategy — text / accessibility-description, not resource-id.**
   The live UI hierarchy (captured with `adb shell uiautomator dump`) showed the
-  app renders through a cross-platform toolkit that exposes **no stable
-  `resource-id`s** — every node is a generic `View`/`TextView` carrying visible
-  `text` or `content-desc`. Locating by user-visible text via `UiSelector` is
-  therefore the correct and most stable strategy here, and it is centralised in
-  `base.page.ts` so any change is a one-line edit. Candidate-list helpers
-  (`firstVisible`) let a step try several plausible labels without committing to
-  one that may not exist in this build.
+  app's Flutter-style shell renders **no stable `resource-id`s** — every node is
+  a generic `View`/`TextView` carrying visible `text` or `content-desc`. Locating
+  by user-visible text via `UiSelector` is therefore the correct strategy for the
+  shell, centralised in `base.page.ts`. The **check-in survey activity is an
+  exception**: it exposes ids such as `survey.vas.seekbar` and
+  `survey.vas.value_label`, which the check-in Page Object prefers. Geometry that
+  must remain positional (bottom nav, Progress count column, strength drag) uses
+  **fractions of window size**, not hardcoded pixels from the X6c's 720×1604.
 
 - **Explicit waits only.** Every interaction waits for a real UI condition
   (`waitForDisplayed` / `waitForExist` / enabled). There are **no fixed sleeps as
@@ -161,9 +162,15 @@ wdio.conf.ts          Runner config, Appium service, bounded timeouts, Allure re
   The whole journey is a single test, so one failure aborts cleanly rather than
   cascading confusing errors across separate tests.
 
-- **Runtime-computed date.** The expected check-in date is derived at run time in
-  the device's local timezone (`testData.ts`), never hardcoded — per the
-  date-attribution reasoning in `TASK1.md`.
+- **Runtime / virtual date.** The intended check-in date is read from Home's
+  **Today** label after any Test-settings day advance (e.g. `Fri 17 Jul`), not
+  hardcoded and not assumed from the host clock alone — per the date-attribution
+  reasoning in `TASK1.md`.
+
+- **Progress assertion (Q4 resolved for this build).** Stats "Pain scores
+  recorded" is a **count**; the Pain chart shows only a daily average. The suite
+  asserts count `+1` (and persistence after reopen) and verifies value `1` on the
+  check-in `survey.vas.value_label` at submit time.
 
 - **Single-command, self-contained reporting.** Appium is managed by WDIO and the
   Allure report is generated as one `index.html` in `onComplete` (even on
@@ -179,10 +186,10 @@ wdio.conf.ts          Runner config, Appium service, bounded timeouts, Allure re
   them from a secrets store.
 - `noReset: true` is correct: we automate the **already-installed** build (no
   `.apk` was supplied), so app data/session must be preserved.
-- "Pain score recorded as 1" means a pain-score **value of 1** is recorded and
-  surfaced on the Progress *Surveys & assessments* area (see `TASK1.md`, open
-  question 4). If this build shows only a record count on the card, that is the
-  point where the count-vs-value distinction is asserted.
+- "Pain score recorded as 1" — on this build the Progress Stats card shows a
+  **count**, not the numeric score; value `1` is asserted on the check-in slider
+  badge at submit, and Progress is asserted via count `+1` (see `TASK1.md` Q4).
+  The intended date is the Home Today label after any virtual-day seed.
 
 ---
 

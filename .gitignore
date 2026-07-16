@@ -1,6 +1,9 @@
 # Dependencies
 node_modules/
 
+# Local JDK (downloaded for running the suite; never committed)
+.jdk/
+
 # Build output
 .tsbuild/
 *.tsbuildinfo

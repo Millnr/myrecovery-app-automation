@@ -4,17 +4,31 @@ import { HomePage } from '../pageobjects/home.page.js';
 import { CheckInPage } from '../pageobjects/checkin.page.js';
 import { ProgressPage } from '../pageobjects/progress.page.js';
 import { MorePage } from '../pageobjects/more.page.js';
-import { patient, EXPECTED_PAIN_SCORE } from '../data/testData.js';
+import { TestSettingsPage } from '../pageobjects/testsettings.page.js';
+import { patient, EXPECTED_PAIN_SCORE, expectedDateFromHomeLabel } from '../data/testData.js';
+import { testConfig } from '../../config/capabilities.js';
+import { driver } from '@wdio/globals';
 
 /**
- * myrecovery — "more advanced" core regression flow (Task 2).
+ * myrecovery patient — "more advanced" core regression flow (Task 2).
  *
- * Login → dismiss all surveys → Home → daily pain check-in (score 1) →
- * Progress tab → verify Surveys & assessments shows the pain score → log out.
+ * Login → dismiss all surveys → Home → seed a daily check-in → record pain
+ * score 1 → verify it on the Progress "Surveys & assessments" card → log out.
  *
  * The whole journey is a single test: a failure at any step aborts with a clear,
  * step-scoped message (and Mocha's timeout guards against a hang), rather than
  * cascading confusing failures across separate tests.
+ *
+ * Note on the "seed" step: the demo account's daily check-in stopped generating
+ * (documented in README + TASK1.md §8). Per the chosen approach, the suite uses
+ * the in-app Test settings debug menu to advance the app's virtual day by one,
+ * which surfaces a fresh, completable check-in. This is isolated in
+ * TestSettingsPage so the dependency is explicit and removable.
+ *
+ * Assertions (TASK1 B1/B2 + Q4):
+ *  - Pain value 1 is confirmed on the check-in seekbar badge (Stats card is count-only).
+ *  - Progress Stats count increases by exactly one and persists after reopen.
+ *  - Intended date is the Home "Today" label after virtual-day advance.
  */
 describe('myrecovery patient — daily pain check-in (advanced flow)', () => {
   const login = new LoginPage();
@@ -23,40 +37,82 @@ describe('myrecovery patient — daily pain check-in (advanced flow)', () => {
   const checkIn = new CheckInPage();
   const progress = new ProgressPage();
   const more = new MorePage();
+  const testSettings = new TestSettingsPage();
 
   const step = (name: string) => console.log(`\n▶ STEP: ${name}`);
+
+  before(async () => {
+    // Deterministic starting state: cold-start the app, then guarantee we are
+    // logged out so the login step always begins from the entry screen — even if
+    // a previous run failed before its own logout.
+    await driver.terminateApp(testConfig.app.appPackage);
+    await driver.activateApp(testConfig.app.appPackage);
+
+    await driver.waitUntil(async () => (await login.isAtEntry(1500)) || (await home.isReady()), {
+      timeout: 45000,
+      interval: 1500,
+      timeoutMsg: 'App did not reach the login entry screen or Home after launch',
+    });
+
+    if (!(await login.isAtEntry(1500)) && (await home.isReady())) {
+      await more.open();
+      await more.logOut();
+      await login.waitUntilLoaded();
+    }
+  });
 
   it('records a pain score of 1 and reflects it on Progress, then logs out', async () => {
     step('1. Login as patient');
     await login.loginAs(patient.email, patient.password);
 
     step('2. Close all surveys (bounded loop — handles zero, one, or several)');
-    const result = await surveys.dismissAllSurveys(() => home.isReady());
+    const dismissal = await surveys.dismissAllSurveys(() => home.isReady());
     console.log(
-      `   surveys dismissed: ${result.dismissedCount} (iterations: ${result.iterations}, reachedHome: ${result.reachedHome})`,
+      `   surveys dismissed: ${dismissal.dismissedCount} (iterations: ${dismissal.iterations}, reachedHome: ${dismissal.reachedHome})`,
     );
 
     step('3. Confirm Home is displayed');
     await home.waitUntilReady();
 
-    step('4. Open pain score / daily check-in');
+    step('4. Seed a completable daily check-in (Test settings → Forward 1 day)');
+    const { daysForwarded } = await testSettings.advanceOneDayToSurfaceCheckIn();
+    await home.waitUntilReady();
+    const intendedDateLabel = await home.readTodayDateLabel();
+    const intendedDate = expectedDateFromHomeLabel(intendedDateLabel);
+    console.log(
+      `   virtual days forwarded: ${daysForwarded}; intended date (Home Today): ${intendedDate.weekdayDayMonth}`,
+    );
+
+    step('5. Capture the baseline "Pain scores recorded" count');
+    await progress.openStats();
+    const baseline = await progress.readPainScoresRecorded();
+    console.log(`   baseline pain scores recorded: ${baseline}`);
+
+    step('6. Open the pain score / daily check-in from Home');
+    await home.goHome();
+    // Re-confirm attribution date is still the seeded virtual day before opening.
+    await expect(await home.readTodayDateLabel()).toBe(intendedDate.weekdayDayMonth);
     await home.openDailyCheckIn();
 
-    step(`5. Complete the check-in with pain score ${EXPECTED_PAIN_SCORE}`);
+    step(`7. Complete the check-in with pain score ${EXPECTED_PAIN_SCORE} (value verified on seekbar badge)`);
     await checkIn.completeCheckIn(EXPECTED_PAIN_SCORE);
 
-    step('6. Go to Progress tab');
-    await progress.open();
+    step('8. Verify Progress — count +1, persists after reopen; date attribution from Home');
+    await progress.openStats();
+    const updated = await progress.verifyPainScoreRecorded(baseline);
+    console.log(`   pain scores recorded now: ${updated} (was ${baseline})`);
+    await progress.confirmCountPersistsAfterReopen(updated);
 
-    step(`7. Verify Surveys & assessments card shows pain score recorded as ${EXPECTED_PAIN_SCORE}`);
-    const verified = await progress.verifyPainScoreRecorded(EXPECTED_PAIN_SCORE);
-    await expect(verified).toBe(true);
+    // Stats/Pain do not expose a discrete score or per-record date in v8.2.0;
+    // primary date proof is Home's Today label (captured after virtual-day seed).
+    await home.goHome();
+    await expect(await home.readTodayDateLabel()).toBe(intendedDate.weekdayDayMonth);
 
-    step('8. More → Log out → confirm');
+    step('9. More → Log out → confirm');
     await more.open();
     await more.logOut();
 
-    step('9. Confirm return to the login/entry screen');
+    step('10. Confirm return to the login/entry screen');
     await login.waitUntilLoaded();
   });
 });
