@@ -74,14 +74,13 @@ describe('myrecovery patient — daily pain check-in (advanced flow)', () => {
     step('3. Confirm Home is displayed');
     await home.waitUntilReady();
 
-    step('4. Seed a completable daily check-in (Test settings → Forward 1 day)');
-    const { daysForwarded } = await testSettings.advanceOneDayToSurfaceCheckIn();
+    step('4. Seed a completable daily check-in (Test settings → Forward day(s))');
+    const { daysForwarded } = await testSettings.advanceUntilCheckInAvailable(async () => {
+      await home.waitUntilReady();
+      return home.hasDailyCheckIn();
+    });
     await home.waitUntilReady();
-    const intendedDateLabel = await home.readTodayDateLabel();
-    const intendedDate = expectedDateFromHomeLabel(intendedDateLabel);
-    console.log(
-      `   virtual days forwarded: ${daysForwarded}; intended date (Home Today): ${intendedDate.weekdayDayMonth}`,
-    );
+    console.log(`   virtual days forwarded: ${daysForwarded}`);
 
     step('5. Capture the baseline "Pain scores recorded" count');
     await progress.openStats();
@@ -90,8 +89,11 @@ describe('myrecovery patient — daily pain check-in (advanced flow)', () => {
 
     step('6. Open the pain score / daily check-in from Home');
     await home.goHome();
-    // Re-confirm attribution date is still the seeded virtual day before opening.
-    await expect(await home.readTodayDateLabel()).toBe(intendedDate.weekdayDayMonth);
+    // Capture the attribution date at the point of use: Home has now settled to
+    // the seeded virtual day. Reading it immediately after the day-forward can
+    // race the Home re-render, so this is the authoritative point.
+    const intendedDate = expectedDateFromHomeLabel(await home.readTodayDateLabel());
+    console.log(`   intended date (Home Today): ${intendedDate.weekdayDayMonth}`);
     await home.openDailyCheckIn();
 
     step(`7. Complete the check-in with pain score ${EXPECTED_PAIN_SCORE} (value verified on seekbar badge)`);

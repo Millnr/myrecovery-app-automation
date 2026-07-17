@@ -18,21 +18,33 @@ export class TestSettingsPage extends BasePage {
   }
 
   /**
-   * Advance the app's virtual date by one day so today's daily check-in is
-   * available. Starts and ends on Home. Idempotent across runs: each run steps
-   * to a new day whose check-in is not yet completed.
-   * @returns how many virtual days were advanced (always 1 here) so callers can
-   *   reason about attribution without guessing the host clock.
+   * Advance the app's virtual date one day at a time until a completable daily
+   * check-in is available on Home, then stop. Starts and ends on Home.
+   *
+   * Self-healing across runs: a day whose check-in was already completed by an
+   * earlier run shows no card, so the loop steps forward again until it finds a
+   * fresh day. This keeps the suite re-runnable without manual state resets.
+   *
+   * @param isCheckInAvailable predicate (injected to stay decoupled from HomePage)
+   *   that resolves true once Home shows a daily check-in card.
+   * @returns how many virtual days were advanced, so the caller can reason about
+   *   the attribution date from the live Home label rather than the host clock.
    */
-  async advanceOneDayToSurfaceCheckIn(): Promise<{ daysForwarded: number }> {
-    await this.tapBottomNav('More');
-    await this.scrollToText('Test settings').catch(() => undefined);
-    await this.tap(this.menuItem, 'the "Test settings" menu item');
+  async advanceUntilCheckInAvailable(
+    isCheckInAvailable: () => Promise<boolean>,
+    maxDays = 10,
+  ): Promise<{ daysForwarded: number }> {
+    for (let day = 1; day <= maxDays; day++) {
+      await this.tapBottomNav('More');
+      await this.scrollToText('Test settings').catch(() => undefined);
+      await this.tap(this.menuItem, 'the "Test settings" menu item');
+      await this.tap(this.forwardOneDay, 'the "Forward 1 day" control', 15000);
 
-    await this.tap(this.forwardOneDay, 'the "Forward 1 day" control', 15000);
-
-    // Return to Home so the newly-generated check-in card is in view.
-    await this.tapBottomNav('Home');
-    return { daysForwarded: 1 };
+      await this.tapBottomNav('Home');
+      if (await isCheckInAvailable()) return { daysForwarded: day };
+    }
+    throw new Error(
+      `No daily check-in became available after advancing the virtual day ${maxDays} times.`,
+    );
   }
 }

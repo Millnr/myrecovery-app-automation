@@ -1,42 +1,44 @@
-import { $ } from '@wdio/globals';
+import { $, driver } from '@wdio/globals';
 import { BasePage } from './base.page.js';
 
 /**
  * Pain score / daily check-in survey.
  *
- * [VERIFIED 2026-07-17] Flow mapped on app v8.2.0 / HONOR X6c:
- *   intro ("Tap to start") -> pain rating (step 2/4) -> strength & energy
- *   (step 3/4) -> disclaimer + Submit (4/4) -> RTM welcome popup.
+ * [VERIFIED 2026-07-17] Flow on app v8.2.0 / HONOR X6c: an optional intro
+ * ("Tap to start") then a paged survey — Pain rating (VAS 0–10), Strength &
+ * energy (VAS), a disclaimer page with Submit — followed by the RTM popup.
  *
- * Unlike the Flutter shell, the check-in activity exposes stable resource-ids
- * (e.g. survey.vas.seekbar, survey.vas.value_label). Pain is set by tapping the
- * seekbar at the scale-number's x and the seekbar's own centre y — no hardcoded
- * pixel offsets. Strength is dragged by a fraction of window width.
+ * Unlike the Flutter shell, the survey activity exposes stable resource-ids
+ * (survey.vas.seekbar, survey.vas.value_label, survey.question.title, …), which
+ * this Page Object prefers. Pain is set by tapping the seekbar at the scale
+ * number's x and the seekbar's own centre y (no hardcoded pixel offsets).
+ *
+ * Robustness: the survey RESUMES at the first unanswered question, so across
+ * runs it may not open on the pain page. The flow therefore rewinds to the first
+ * page and walks forward, setting the pain page to the required value and any
+ * other VAS page to an arbitrary value, until Submit — never assuming page order.
  */
 export class CheckInPage extends BasePage {
   private get startButton(): string {
     return this.byText('Tap to start');
   }
-  private get painQuestion(): string {
-    return this.byTextContains('How much pain');
+  private get questionTitle(): string {
+    return this.byId('survey.question.title');
   }
-  private get painSeekbar(): string {
+  private get seekbar(): string {
     return this.byId('survey.vas.seekbar');
   }
-  private get painValueLabel(): string {
+  private get valueLabel(): string {
     return this.byId('survey.vas.value_label');
   }
-  private painNumber(value: number): string {
-    // Prefer the dedicated min_label id for "1"; other values use scale text.
-    if (value === 1) return this.byId('survey.vas.min_label');
-    if (value === 10) return this.byId('survey.vas.max_label');
-    return this.byTextInstance(String(value), 0);
+  private get minLabel(): string {
+    return this.byId('survey.vas.min_label'); // the "1" end of the scale
   }
-  private get strengthBadgeUnset(): string {
-    return this.byText('-'); // value_label before a value is chosen
+  private get maxLabel(): string {
+    return this.byId('survey.vas.max_label'); // the "10" end of the scale
   }
-  private get strengthHandle(): string {
-    return this.byId('survey.vas.handle');
+  private get previousButton(): string {
+    return this.byText('Previous');
   }
   private get nextButton(): string {
     return this.byText('Next');
@@ -45,46 +47,85 @@ export class CheckInPage extends BasePage {
     return this.byText('Submit');
   }
 
-  /** Read the pain slider's current value from survey.vas.value_label. */
-  private async readPainBadge(): Promise<string | null> {
-    if (await this.isVisible(this.painValueLabel, 2500)) {
-      const text = (await $(this.painValueLabel).getText()).trim();
-      return text.length > 0 ? text : null;
+  private async titleText(): Promise<string> {
+    if (await this.isVisible(this.questionTitle, 1500)) {
+      return (await $(this.questionTitle).getText()).trim();
     }
-    // Fallback for builds without the id: first digit in the upper ~40% of the screen.
-    const { height } = await this.windowSize();
-    const badge = (await this.pageNodes()).find(
-      (n) => /^\d+$/.test(n.text) && n.cy > height * 0.08 && n.cy < height * 0.4,
-    );
-    return badge ? badge.text : null;
+    return '';
   }
 
-  /** Open the survey's first rating step. */
+  private async valueLabelText(): Promise<string | null> {
+    if (await this.isVisible(this.valueLabel, 1500)) {
+      return (await $(this.valueLabel).getText()).trim();
+    }
+    return null;
+  }
+
+  private async isPainPage(): Promise<boolean> {
+    return (await this.titleText()).toLowerCase().includes('pain');
+  }
+
+  private async submitVisible(): Promise<boolean> {
+    return this.isVisible(this.submitButton, 1500);
+  }
+
+  /** Open the survey and clear the optional intro. Fails clearly if not in it. */
   async start(): Promise<void> {
-    await this.tap(this.startButton, 'the check-in "Tap to start" button', 30000);
-    await this.waitForVisible(this.painQuestion, 'the pain rating question', 20000);
+    await this.dismissInterstitials();
+    if (await this.isVisible(this.startButton, 10000)) {
+      await this.tap(this.startButton, 'the check-in "Tap to start" button', 15000);
+      await this.dismissInterstitials();
+    }
+    await driver.waitUntil(
+      async () => (await this.isVisible(this.seekbar, 1500)) || (await this.submitVisible()),
+      {
+        timeout: 20000,
+        interval: 1000,
+        timeoutMsg: `Check-in did not present a survey question after opening`,
+      },
+    );
   }
 
   /**
-   * Set the pain score by tapping the seekbar track at the scale number's x
-   * (y = seekbar centre — derived from the live element, not a pixel constant).
-   * Confirms via value_label; retries once on mismatch, then fails clearly.
+   * Move back to the pain page. The survey resumes at the first unanswered
+   * question, so it may open ahead of pain; pain is the first question, so we
+   * only ever tap Previous while NOT on it (never rewinding past it into the
+   * intro). Fails clearly if the pain page can't be reached.
    */
-  async setPainScore(value: number): Promise<void> {
-    const numberSelector = this.painNumber(value);
+  private async ensureOnPainPage(maxBack = 8): Promise<void> {
+    for (let i = 0; i < maxBack; i++) {
+      if (await this.isPainPage()) return;
+      if (!(await this.isVisible(this.previousButton, 1200))) break;
+      const before = await this.titleText();
+      await this.tap(this.previousButton, 'the survey "Previous" button', 5000);
+      await driver.pause(500);
+      if ((await this.titleText()) === before) break; // no further back
+    }
+    if (!(await this.isPainPage())) {
+      throw new Error(
+        `Could not reach the pain rating page in the check-in. On screen: ${await this.describeScreen()}`,
+      );
+    }
+  }
+
+  /**
+   * Set the pain score by tapping the seekbar at the "1" scale-number's x and the
+   * seekbar's centre y, confirming via the value label. Retries once, then fails.
+   */
+  private async setPainScore(value: number): Promise<void> {
+    await this.waitForVisible(this.seekbar, 'the pain seekbar', 10000);
+    const numberSelector = value === 1 ? this.minLabel : this.byTextInstance(String(value), 0);
     await this.waitForVisible(numberSelector, `pain scale number "${value}"`);
-    await this.waitForVisible(this.painSeekbar, 'the pain seekbar', 10000);
 
     for (let attempt = 1; attempt <= 2; attempt++) {
       const numberCentre = await this.centerOf(numberSelector);
-      const seekbarCentre = await this.centerOf(this.painSeekbar);
+      const seekbarCentre = await this.centerOf(this.seekbar);
       await this.tapAt(numberCentre.x, seekbarCentre.y);
 
-      const shown = await this.readPainBadge();
-      if (shown === String(value)) return;
+      if ((await this.valueLabelText()) === String(value)) return;
       if (attempt === 2) {
         throw new Error(
-          `Pain slider did not settle on "${value}" (badge showed "${shown ?? 'none'}"). ` +
+          `Pain slider did not settle on "${value}" (label showed "${await this.valueLabelText()}"). ` +
             `On screen: ${await this.describeScreen()}`,
         );
       }
@@ -92,37 +133,57 @@ export class CheckInPage extends BasePage {
   }
 
   /**
-   * Set the strength & energy slider to any value (task fixes only pain).
-   * Drags the handle by ~25% of window width — scales across densities.
+   * Set any current (non-pain) VAS question to an arbitrary value by tapping the
+   * track toward the "10" end. Tapping the dead-centre (where the handle sits)
+   * does not register, so we deliberately tap an end position.
    */
-  private async setStrengthAnyValue(): Promise<void> {
-    if (!(await this.isVisible(this.strengthBadgeUnset, 4000))) return; // already set / not present
-
-    const { width } = await this.windowSize();
-    const handleSelector = (await this.isVisible(this.strengthHandle, 2000))
-      ? this.strengthHandle
-      : this.strengthBadgeUnset;
-    const knob = await this.centerOf(handleSelector);
-    await this.dragTo(knob.x, knob.y, knob.x + width * 0.25, knob.y, 1000);
-    await this.waitForGone(this.strengthBadgeUnset, 'unset strength value', 6000).catch(() => undefined);
+  private async setVasAnyValue(): Promise<void> {
+    await this.waitForVisible(this.seekbar, 'the VAS seekbar', 8000);
+    const end = await this.centerOf(this.maxLabel);
+    const seekbarCentre = await this.centerOf(this.seekbar);
+    await this.tapAt(end.x, seekbarCentre.y);
+    await driver.waitUntil(async () => (await this.valueLabelText()) !== '-', {
+      timeout: 6000,
+      interval: 500,
+      timeoutMsg: 'VAS value did not register after tapping the track',
+    });
   }
 
   /**
-   * Complete the whole check-in with the given pain value and submit it.
-   * Each step is explicitly waited; a missing control fails the suite clearly.
+   * Complete the whole check-in: rewind to the first page, then walk forward
+   * setting the pain page to `value` and any other VAS page to an arbitrary
+   * value, until Submit. Order-independent and resume-safe.
    */
-  async completeCheckIn(value: number): Promise<void> {
+  async completeCheckIn(value: number, maxPages = 8): Promise<void> {
     await this.start();
 
+    // Set the required pain value on the pain page.
+    await this.ensureOnPainPage();
     await this.setPainScore(value);
-    await this.tap(this.nextButton, 'Next (after pain rating)');
 
-    await this.setStrengthAnyValue();
-    await this.tap(this.nextButton, 'Next (after strength & energy)');
+    // Walk forward, answering each remaining VAS page, until Submit.
+    for (let page = 0; page < maxPages; page++) {
+      const before = await this.titleText();
+      await this.tap(this.nextButton, 'the survey "Next" button');
+      await driver.waitUntil(
+        async () => (await this.titleText()) !== before || (await this.submitVisible()),
+        { timeout: 12000, interval: 750, timeoutMsg: `Survey did not advance past "${before}"` },
+      );
 
-    await this.tap(this.submitButton, 'Submit (check-in)', 15000);
+      if (await this.submitVisible()) {
+        await this.tap(this.submitButton, 'Submit (check-in)', 15000);
+        await this.dismissInterstitials(); // RTM welcome popup follows submission
+        return;
+      }
 
-    // The RTM welcome popup typically follows submission.
-    await this.dismissInterstitials();
+      // On a new question page: answer it if it is an unset VAS.
+      if ((await this.valueLabelText()) === '-') {
+        await this.setVasAnyValue();
+      }
+    }
+
+    throw new Error(
+      `Check-in did not reach Submit within ${maxPages} pages. On screen: ${await this.describeScreen()}`,
+    );
   }
 }

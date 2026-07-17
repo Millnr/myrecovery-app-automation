@@ -1,3 +1,4 @@
+import { driver } from '@wdio/globals';
 import { BasePage } from './base.page.js';
 
 /**
@@ -28,12 +29,7 @@ export class HomePage extends BasePage {
     return this.byTextContains('daily check-in');
   }
 
-  /**
-   * The app's virtual "Today" date label under the timeline (e.g. "Fri 17 Jul").
-   * This is the intended check-in attribution date when Test settings has
-   * forwarded the day — prefer reading it from the UI over host-clock math.
-   */
-  async readTodayDateLabel(): Promise<string> {
+  private async readTodayDateLabelOnce(): Promise<string> {
     const nodes = await this.pageNodes();
     // Prefer a node immediately under a "Today" marker when present.
     const todayIdx = nodes.findIndex((n) => n.text === 'Today');
@@ -48,6 +44,26 @@ export class HomePage extends BasePage {
       `Could not read Home's Today date label (expected e.g. "Fri 17 Jul"). ` +
         `On screen: ${await this.describeScreen()}`,
     );
+  }
+
+  /**
+   * The app's virtual "Today" date label under the timeline (e.g. "Fri 17 Jul").
+   * This is the intended check-in attribution date when Test settings has
+   * forwarded the day — read from the UI, not host-clock math.
+   *
+   * Stabilised: right after returning to Home the label can briefly show the
+   * pre-forward date before it settles, so we read until two consecutive reads
+   * agree (bounded) to avoid capturing a transient value.
+   */
+  async readTodayDateLabel(): Promise<string> {
+    let last = await this.readTodayDateLabelOnce();
+    for (let i = 0; i < 6; i++) {
+      await driver.pause(700);
+      const next = await this.readTodayDateLabelOnce();
+      if (next === last) return next;
+      last = next;
+    }
+    return last;
   }
 
   /** True once the logged-in Home shell (bottom nav) is present. */

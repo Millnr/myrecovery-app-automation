@@ -275,6 +275,10 @@ export abstract class BasePage {
    * ~15% of the window (not a hardcoded y like 1380 — that only fits 720x1604).
    */
   async tapBottomNav(label: string): Promise<void> {
+    // The recurring RTM / Health Connect popups can cover the nav bar, so clear
+    // them first. (dismissInterstitials uses element.click, never tapBottomNav —
+    // no recursion.)
+    await this.dismissInterstitials();
     const { height } = await this.windowSize();
     const navBandTop = height * 0.85;
     const nav = (await this.pageNodes()).find((n) => n.text === label && n.cy > navBandTop);
