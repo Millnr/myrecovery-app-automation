@@ -8,13 +8,13 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "wdio run ./wdio.conf.ts",
-    "pretest": "node ./scripts/preflight.mjs",
+    "test": "node ./scripts/with-env.mjs wdio run ./wdio.conf.ts",
+    "pretest": "node ./scripts/with-env.mjs node ./scripts/preflight.mjs",
     "postinstall": "appium driver install uiautomator2 || echo 'uiautomator2 driver already installed or install skipped'",
     "doctor": "appium driver doctor uiautomator2",
     "device:check": "adb devices -l",
     "caps:discover": "node ./scripts/discover-caps.mjs",
-    "report": "allure generate ./reports/allure-results --single-file --clean -o ./reports/allure-report"
+    "report": "node ./scripts/with-env.mjs allure generate ./reports/allure-results --single-file --clean -o ./reports/allure-report"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.7",

@@ -10,13 +10,15 @@ import { BasePage } from './base.page.js';
  */
 export class HomePage extends BasePage {
   private get bottomNavCandidates(): string[] {
+    // Prefer text: live dumps show bottom-nav labels as text, not content-desc.
+    // Putting byDesc first burned the probe budget on misses every poll.
     return [
-      this.byDesc('Home'),
       this.byText('Home'),
-      this.byDesc('Progress'),
       this.byText('Progress'),
-      this.byDesc('More'),
       this.byText('More'),
+      this.byDesc('Home'),
+      this.byDesc('Progress'),
+      this.byDesc('More'),
     ];
   }
 
@@ -50,7 +52,8 @@ export class HomePage extends BasePage {
 
   /** True once the logged-in Home shell (bottom nav) is present. */
   async isReady(): Promise<boolean> {
-    return this.isAnyVisible(this.bottomNavCandidates, 2500);
+    // Short overall budget: used inside waitUntil / survey-loop polls.
+    return this.isAnyVisible(this.bottomNavCandidates, 1200);
   }
 
   /** Wait for Home, failing clearly if it never loads. */

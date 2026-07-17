@@ -172,20 +172,26 @@ export abstract class BasePage {
 
   /** True if ANY of the candidate selectors is currently displayed. */
   async isAnyVisible(selectors: string[], timeout = this.probeTimeout): Promise<boolean> {
-    for (const selector of selectors) {
-      if (await this.isVisible(selector, timeout)) return true;
-    }
-    return false;
+    return (await this.firstVisible(selectors, timeout)) !== null;
   }
 
   /**
    * Return the first candidate selector that is currently displayed, or null.
-   * Lets a Page Object try several known affordances (e.g. "Skip" / "Not now" /
-   * a close icon) without committing to one that may not exist in this build.
+   * Polls all candidates with short probes until the overall timeout — never
+   * burns the full timeout on the first miss (that made bottom-nav detection
+   * hang for minutes when content-desc "Home" was absent).
    */
   async firstVisible(selectors: string[], timeout = this.probeTimeout): Promise<string | null> {
-    for (const selector of selectors) {
-      if (await this.isVisible(selector, timeout)) return selector;
+    if (selectors.length === 0) return null;
+    const deadline = Date.now() + timeout;
+    const perTry = Math.min(600, Math.max(200, Math.floor(timeout / selectors.length)));
+
+    while (Date.now() < deadline) {
+      for (const selector of selectors) {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) break;
+        if (await this.isVisible(selector, Math.min(perTry, remaining))) return selector;
+      }
     }
     return null;
   }

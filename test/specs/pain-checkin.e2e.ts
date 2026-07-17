@@ -48,13 +48,13 @@ describe('myrecovery patient — daily pain check-in (advanced flow)', () => {
     await driver.terminateApp(testConfig.app.appPackage);
     await driver.activateApp(testConfig.app.appPackage);
 
-    await driver.waitUntil(async () => (await login.isAtEntry(1500)) || (await home.isReady()), {
+    await driver.waitUntil(async () => (await login.isAtEntry(800)) || (await home.isReady()), {
       timeout: 45000,
-      interval: 1500,
+      interval: 1000,
       timeoutMsg: 'App did not reach the login entry screen or Home after launch',
     });
 
-    if (!(await login.isAtEntry(1500)) && (await home.isReady())) {
+    if (!(await login.isAtEntry(800)) && (await home.isReady())) {
       await more.open();
       await more.logOut();
       await login.waitUntilLoaded();

@@ -60,9 +60,12 @@ You can re-run this discovery any time with `npm run caps:discover`.
    (default assumed: `~/Library/Android/sdk`). `adb` must be reachable.
 3. **JDK 17** available on `PATH` / via `JAVA_HOME`. The UiAutomator2 driver **and**
    the Allure report generator are Java processes, so a JDK is mandatory.
-   This project ships a committed **`.java-version`** file pinned to `17`, so if
-   you use **jenv** the correct JDK is selected automatically inside this folder
-   only (it does not change your machine-wide Java). Example one-time setup:
+   **Easiest for this repo:** place (or keep) a JDK 17 under `.jdk/` — for example
+   `.jdk/jdk-17.0.19+10/Contents/Home` on macOS. `npm test` and `npm run report`
+   run through [`scripts/with-env.mjs`](scripts/with-env.mjs), which sets
+   `JAVA_HOME` / `PATH` (and `ANDROID_HOME` from `~/Library/Android/sdk` when
+   present) for those commands only — no machine-wide install needed.
+   Alternatively, use **jenv** with the committed `.java-version` (`17`):
    ```bash
    brew install --cask temurin@17      # or any JDK 17 distribution
    brew install jenv
