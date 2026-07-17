@@ -19,16 +19,16 @@ import { driver } from '@wdio/globals';
  * step-scoped message (and Mocha's timeout guards against a hang), rather than
  * cascading confusing failures across separate tests.
  *
- * Note on the "seed" step: the demo account's daily check-in stopped generating
- * (documented in README + TASK1.md §8). Per the chosen approach, the suite uses
- * the in-app Test settings debug menu to advance the app's virtual day by one,
- * which surfaces a fresh, completable check-in. This is isolated in
- * TestSettingsPage so the dependency is explicit and removable.
+ * On the HOPCo-provided account (demouser1a) the daily check-in is available
+ * naturally, so no seeding is normally needed. Step 4 only falls back to the Test
+ * settings debug menu (advance the virtual day) if today's check-in has already
+ * been completed — kept isolated in TestSettingsPage so the dependency is
+ * explicit and used only when unavoidable.
  *
  * Assertions (TASK1 B1/B2 + Q4):
  *  - Pain value 1 is confirmed on the check-in seekbar badge (Stats card is count-only).
  *  - Progress Stats count increases by exactly one and persists after reopen.
- *  - Intended date is the Home "Today" label after virtual-day advance.
+ *  - Intended date is the Home "Today" label at the point the check-in is opened.
  */
 describe('myrecovery patient — daily pain check-in (advanced flow)', () => {
   const login = new LoginPage();
@@ -44,21 +44,30 @@ describe('myrecovery patient — daily pain check-in (advanced flow)', () => {
   before(async () => {
     // Deterministic starting state: cold-start the app, then guarantee we are
     // logged out so the login step always begins from the entry screen — even if
-    // a previous run failed before its own logout.
+    // a previous run left a session logged in, or the account differs.
     await driver.terminateApp(testConfig.app.appPackage);
     await driver.activateApp(testConfig.app.appPackage);
 
-    await driver.waitUntil(async () => (await login.isAtEntry(800)) || (await home.isReady()), {
-      timeout: 45000,
-      interval: 1000,
-      timeoutMsg: 'App did not reach the login entry screen or Home after launch',
-    });
+    // Wait for the app to present a recognisable surface: the login entry, Home,
+    // or a post-login overlay (a survey TaskActivity or a welcome PopupActivity).
+    await driver.waitUntil(
+      async () => {
+        if (await login.isAtEntry(800)) return true;
+        if (await home.isReady()) return true;
+        return /TaskActivity|PopupActivity/.test(await home.currentActivity());
+      },
+      { timeout: 60000, interval: 1500, timeoutMsg: 'App did not reach a known surface after launch' },
+    );
 
-    if (!(await login.isAtEntry(800)) && (await home.isReady())) {
-      await more.open();
-      await more.logOut();
-      await login.waitUntilLoaded();
-    }
+    if (await login.isAtEntry(1000)) return; // already logged out
+
+    // Logged in (Home or post-login overlays): clear overlays to reach Home,
+    // then log out so the test starts from the entry screen.
+    await surveys.dismissAllSurveys(() => home.isReady());
+    await home.waitUntilReady();
+    await more.open();
+    await more.logOut();
+    await login.waitUntilLoaded();
   });
 
   it('records a pain score of 1 and reflects it on Progress, then logs out', async () => {
@@ -74,13 +83,19 @@ describe('myrecovery patient — daily pain check-in (advanced flow)', () => {
     step('3. Confirm Home is displayed');
     await home.waitUntilReady();
 
-    step('4. Seed a completable daily check-in (Test settings → Forward day(s))');
-    const { daysForwarded } = await testSettings.advanceUntilCheckInAvailable(async () => {
+    step('4. Ensure a completable daily check-in is available');
+    if (await home.hasDailyCheckIn()) {
+      console.log('   daily check-in already available (no seeding needed)');
+    } else {
+      // Fallback: today's check-in was already completed — advance the virtual
+      // day via Test settings until a fresh, completable one appears.
+      const { daysForwarded } = await testSettings.advanceUntilCheckInAvailable(async () => {
+        await home.waitUntilReady();
+        return home.hasDailyCheckIn();
+      });
       await home.waitUntilReady();
-      return home.hasDailyCheckIn();
-    });
-    await home.waitUntilReady();
-    console.log(`   virtual days forwarded: ${daysForwarded}`);
+      console.log(`   seeded via Test settings; virtual days forwarded: ${daysForwarded}`);
+    }
 
     step('5. Capture the baseline "Pain scores recorded" count');
     await progress.openStats();

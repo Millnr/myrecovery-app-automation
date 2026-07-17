@@ -2,7 +2,7 @@ import { driver } from '@wdio/globals';
 import { BasePage } from './base.page.js';
 
 export interface SurveyDismissResult {
-  /** How many survey dismiss actions were performed (0 is valid). */
+  /** How many survey close actions were performed (0 is valid). */
   dismissedCount: number;
   /** How many loop iterations ran. */
   iterations: number;
@@ -13,84 +13,90 @@ export interface SurveyDismissResult {
 /**
  * Handles the post-login "pending surveys" state.
  *
- * This implements the resilient behaviour reasoned out in TASK1.md
- * (SUR-01 / SUR-02 / SUR-04): the number of surveys is NOT assumed. The handler
- *   - waits for either a dismissible survey OR the Home surface,
- *   - dismisses surveys one at a time while a known dismiss control is present,
- *   - confirms each dismissal made progress (the control detaches),
- *   - is bounded by a maximum iteration count so a repeatedly-reappearing survey
- *     produces a CLEAR failure with the current screen contents, never a hang.
+ * [VERIFIED 2026-07-17, demouser1a] After login a pending survey (e.g. "Your
+ * health & wellbeing" / Global Health Questionnaire) auto-presents as a
+ * `TaskActivity`. Per HOPCo, step 2 **closes** these surveys rather than
+ * completing them — completing one removes it permanently, so it would not
+ * reappear on the next run. A survey is closed via its intro acknowledgement
+ * ("OK, thank you") then the close **X** (`survey.question.close_btn`); this does
+ * NOT submit any answers. First-login welcome popups may follow and are cleared
+ * as interstitials.
  *
- * [PROVISIONAL] The dismiss-control candidates below are the plausible "close
- * without completing" affordances for this build (close icon / skip / later).
- * They are the second thing to confirm on the first instrumented run, alongside
- * the survey-state investigation documented in the README.
+ * This implements the resilient behaviour reasoned out in TASK1.md
+ * (SUR-01/02/04): the number of surveys is not assumed (zero, one, or several),
+ * each closure is confirmed by progress, and the loop is bounded so a survey that
+ * refuses to close produces a clear failure rather than a hang.
  */
 export class SurveyPage extends BasePage {
-  /** Ordered candidates for a "dismiss this survey without completing it" control. */
-  private get dismissControlCandidates(): string[] {
-    return [
-      this.byDesc('Close'),
-      this.byDesc('Dismiss'),
-      this.byText('Skip'),
-      this.byText('Not now'),
-      this.byText('Maybe later'),
-      this.byText('Later'),
-      this.byText('No thanks'),
-      this.byText('Remind me later'),
-      this.byTextContains('Skip'),
-    ];
+  private get surveyCloseButton(): string {
+    return this.byId('survey.question.close_btn');
+  }
+  private get surveyIntroAck(): string {
+    return this.byText('OK, thank you');
+  }
+
+  /** Close the currently-presented survey without completing it. */
+  private async closeSurvey(): Promise<void> {
+    // A survey opens on an intro screen whose only action is "OK, thank you";
+    // that reveals the survey body, which carries the close (X) control.
+    if (
+      !(await this.isVisible(this.surveyCloseButton, 1500)) &&
+      (await this.isVisible(this.surveyIntroAck, 1500))
+    ) {
+      await this.tap(this.surveyIntroAck, 'the survey intro "OK, thank you"');
+    }
+
+    await this.waitForVisible(this.surveyCloseButton, 'the survey close (X) button', 8000);
+    await this.tap(this.surveyCloseButton, 'the survey close (X) button');
+
+    // Closing a partly-viewed survey may prompt a discard confirmation.
+    for (const label of ['Yes', 'Close', 'Discard', 'Confirm']) {
+      if (await this.tapIfPresent(this.byText(label), 800)) break;
+    }
   }
 
   /**
-   * Dismiss every pending survey until Home is reached.
+   * Close every pending survey until Home is reached.
    *
    * @param isHomeReady predicate that resolves true once the Home surface is up.
    *   Injected (rather than importing HomePage) to keep this class decoupled and
-   *   to make the convergence condition explicit.
-   * @param maxIterations hard upper bound on dismissals; guards against a survey
-   *   that reappears indefinitely.
+   *   the convergence condition explicit.
+   * @param maxIterations hard upper bound; guards against a survey/popup that
+   *   reappears indefinitely.
    */
   async dismissAllSurveys(
     isHomeReady: () => Promise<boolean>,
-    maxIterations = 8,
+    maxIterations = 10,
   ): Promise<SurveyDismissResult> {
     let dismissedCount = 0;
 
     for (let iteration = 1; iteration <= maxIterations; iteration++) {
-      // Clear any non-survey interstitials (RTM welcome / Health Connect) that
-      // can sit in front of Home alongside, or instead of, pending surveys.
+      // Clear first-login welcome / RTM / Health Connect popups.
       await this.dismissInterstitials();
 
-      // Success condition: zero-survey accounts return as soon as Home is up.
+      // Success: zero-survey accounts return as soon as Home is up.
       if (await isHomeReady()) {
         return { dismissedCount, iterations: iteration - 1, reachedHome: true };
       }
 
-      const control = await this.firstVisible(this.dismissControlCandidates, 3000);
-      if (control) {
-        await this.tap(control, `survey dismiss control [${control}]`);
+      const activity = await this.currentActivity();
+      if (activity.includes('TaskActivity')) {
+        await this.closeSurvey();
         dismissedCount++;
-        // Confirm progress: the tapped control should detach. Tolerate re-render.
-        await this.waitForGone(control, 'dismissed survey control', 8000).catch(() => undefined);
         continue;
       }
 
-      // Neither Home nor a recognised survey control yet. This is often a
-      // transient (post-login loading, or an interstitial mid-render), so settle
-      // briefly and retry rather than failing immediately. The iteration bound is
-      // the real guard against a truly stuck screen.
+      // Neither Home, a popup, nor a survey yet — usually post-login loading.
+      // Settle briefly and retry; the iteration bound is the real guard.
       await driver.pause(1500);
     }
 
-    // Exhausted the iteration budget without reaching Home.
     if (await isHomeReady()) {
       return { dismissedCount, iterations: maxIterations, reachedHome: true };
     }
     throw new Error(
-      `Survey dismissal did not converge after ${maxIterations} iterations ` +
-        `(Home not reached; possible repeatedly-reappearing survey or unexpected screen). ` +
-        `Dismissed ${dismissedCount} so far. On screen: ${await this.describeScreen()}`,
+      `Survey dismissal did not converge after ${maxIterations} iterations (Home not reached). ` +
+        `Closed ${dismissedCount} so far. On screen: ${await this.describeScreen()}`,
     );
   }
 }

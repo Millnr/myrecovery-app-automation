@@ -82,6 +82,20 @@ export const config: WebdriverIO.Config = {
   },
 
   /**
+   * Belt-and-suspenders for Flutter/non-idling UI: capabilities may or may not
+   * apply settings depending on driver/W3C parsing — force them on the live
+   * session so findElement does not block for minutes waiting on idle.
+   */
+  before: async function () {
+    const { driver } = await import('@wdio/globals');
+    await driver.updateSettings({
+      waitForIdleTimeout: 100,
+      waitForSelectorTimeout: 10000,
+      actionAcknowledgmentTimeout: 100,
+    });
+  },
+
+  /**
    * Generate ONE self-contained Allure HTML file from the run results.
    * Runs regardless of pass/fail so a failing run still produces committable
    * proof. `--single-file` yields a single index.html that opens straight from

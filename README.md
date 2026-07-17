@@ -183,10 +183,10 @@ wdio.conf.ts          Runner config, Appium service, bounded timeouts, Allure re
 
 ## Assumptions
 
-- The supplied demo account (`demouser1@test.mr`) is a patient account and is the
-  intended account under test. Its throwaway credentials are committed as
-  defaults so the suite runs with a single command; a real project would inject
-  them from a secrets store.
+- Default account is **`demouser1a@test.mr`** (HOPCo follow-up guidance). The
+  earlier green proof run on GitHub used `demouser1@test.mr`; both are throwaway
+  demo credentials committed as defaults so the suite runs with a single command.
+  Override via `.env` / `PATIENT_EMAIL` / `PATIENT_PASSWORD` if needed.
 - `noReset: true` is correct: we automate the **already-installed** build (no
   `.apk` was supplied), so app data/session must be preserved.
 - "Pain score recorded as 1" — on this build the Progress Stats card shows a
@@ -198,30 +198,35 @@ wdio.conf.ts          Runner config, Appium service, bounded timeouts, Allure re
 
 ## Known limitations & investigation notes
 
-- **Survey generation on the demo account (documented environment issue, not a
-  code bug).** The demo account's pending surveys **stopped generating** during
-  preparation. This was investigated — reproduced across logout/login and a
-  reinstall — and an in-app **"Test settings"** debug menu (More → Test settings)
-  was found exposing QA controls ("Set all surveys to partial", "Forward 1 day",
-  "Clear local results"). A question is out to Henna on whether relying on that
-  menu for test setup is in scope. **Because of this, the survey-dismissal step
-  is written to be resilient to _any_ survey count including zero** — it does not
-  depend on the account being in a particular survey state. See `TASK1.md` §8.
+- **Account switch (demouser1 → demouser1a) — next steps / pending E2E.** Per
+  Henna's follow-up, the suite defaults to **demouser1a** so pending surveys stay
+  available and step 2 **closes** them (OK / thank-you → X) rather than completing
+  them. A full end-to-end green pass on demouser1a was still pending at commit
+  time: on the physical HONOR device a single hands-off attempt timed out in the
+  `before` hook amid intermittent USB flakiness. The already-pushed **demouser1**
+  run remains the proven submission safety net (`0468872` and earlier proof).
 
-- **Post-login locators are provisional and marked `[PROVISIONAL]` in code.** The
-  login *entry* screen was verified against a live hierarchy dump; the
-  credentials, survey-dismiss, check-in, Progress, and logout controls are
-  located by their most plausible visible-text signals and are the first thing to
-  confirm on the initial instrumented run (Appium Inspector or the run's own
-  failure output, which prints the on-screen text). They are centralised as
-  candidate lists so confirming them is a one-line edit per control. This is a
-  deliberate consequence of the app exposing no resource-ids plus limited
-  hands-on time on deeper screens.
+- **Apparent "hangs" = UiAutomator2 idle wait on Flutter (diagnosed).** This app
+  almost never reaches an idle accessibility state (carousel / animations /
+  background work). UiAutomator2's default `waitForIdleTimeout` therefore blocked
+  **before every command**, so one `findElement` could take ~2 minutes and looked
+  like a freeze. Root cause addressed by setting `waitForIdleTimeout` (and related
+  settings) via `appium:settings` **and** forcing them with `driver.updateSettings`
+  in the WDIO `before` hook — previously observed to drop command latency from
+  ~2 min to ~1 s when applied. Re-verify on device after USB is stable; do not
+  treat uninstall/reinstall as the fix for this class of delay.
+
+- **Survey generation on demouser1 (documented environment issue).** That account's
+  pending surveys **stopped generating** during preparation (consumed by
+  completion). Investigation found More → **Test settings** ("Set all surveys to
+  partial", "Forward 1 day", etc.). On demouser1a, closing surveys is preferred;
+  Test-settings day-forward remains a **fallback** only when today's check-in is
+  already done. See `TASK1.md` §8.
 
 - **Shared demo account / today's check-in.** If a check-in already exists for
-  today on the shared account, the app's duplicate rule may change step 5's
-  behaviour (see `TASK1.md` CHK-03/B4). The debug menu's "Clear local results" /
-  "Forward 1 day" is the intended way to reach a clean state.
+  today, the app's duplicate rule may change check-in behaviour (see `TASK1.md`
+  CHK-03/B4). Prefer demouser1a's natural due check-in; otherwise "Forward 1 day"
+  / "Clear local results".
 
 - **Single platform.** Android only, per the brief ("either platform is fine").
 

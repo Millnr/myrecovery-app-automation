@@ -21,7 +21,11 @@ export const testConfig = {
     appActivity: env('APP_ACTIVITY', '.launch.LaunchActivity'),
   },
   account: {
-    email: env('PATIENT_EMAIL', 'demouser1@test.mr'),
+    // demouser1a is the account HOPCo provided for the automation: its pending
+    // surveys are intact (the original demouser1 had them consumed by completion,
+    // so they stopped reappearing). Per HOPCo, step 2 CLOSES surveys rather than
+    // completing them, so they keep appearing on re-runs.
+    email: env('PATIENT_EMAIL', 'demouser1a@test.mr'),
     // Demo account credentials supplied with the exercise. Committing throwaway
     // demo creds keeps the suite runnable with a single command; a real project
     // would inject these from a secrets store / CI variable instead.
@@ -63,4 +67,15 @@ export const androidCapabilities: WebdriverIO.Capabilities = {
   // Steadier animations => steadier explicit waits on a real device.
   'appium:disableWindowAnimation': true,
   'appium:autoGrantPermissions': false,
+  // CRITICAL for this app: it is a Flutter build with a looping video carousel,
+  // survey animations and background polling, so it is almost never "idle".
+  // UiAutomator2 blocks on app idle before every command by default, which made
+  // a single findElement take ~2 minutes here. Nested `appium:settings` (plus
+  // an explicit updateSettings in wdio `before`) force these values so commands
+  // return promptly and our own explicit waits govern timing.
+  'appium:settings': {
+    waitForIdleTimeout: 100,
+    waitForSelectorTimeout: 10000,
+    actionAcknowledgmentTimeout: 100,
+  },
 };

@@ -288,30 +288,50 @@ export abstract class BasePage {
     await this.tapAt(nav.cx, nav.cy);
   }
 
+  /** Current foreground activity (short name), or '' if it can't be read. */
+  async currentActivity(): Promise<string> {
+    try {
+      return await driver.getCurrentActivity();
+    } catch {
+      return '';
+    }
+  }
+
   /**
-   * Dismiss known non-blocking interstitials that can appear at various points
-   * (independently of the pending-survey flow): the Remote Therapeutic
-   * Monitoring welcome popup and the Health Connect onboarding chain. Chooses
-   * the privacy-preserving option ("Not now") and is bounded so it can never
-   * loop forever. Returns how many popups it cleared.
+   * Dismiss non-blocking interstitials that appear independently of the
+   * pending-survey flow: the first-login welcome popups ("Hello/Welcome …"), the
+   * Remote Therapeutic Monitoring popup, and the Health Connect onboarding chain.
+   *
+   * Any `PopupActivity` is treated as a dismissible popup (choosing the
+   * privacy-preserving option first); the Health Connect prompts are matched by
+   * text since they can appear over other screens. Bounded so it can never loop
+   * forever. Returns how many popups it cleared.
    */
-  async dismissInterstitials(maxRounds = 6): Promise<number> {
+  async dismissInterstitials(maxRounds = 8): Promise<number> {
     let dismissed = 0;
     for (let round = 0; round < maxRounds; round++) {
-      const src = await driver.getPageSource();
       let acted = false;
+      const activity = await this.currentActivity();
 
-      if (src.includes('Remote Therapeutic Monitoring')) {
-        acted = await this.tapIfPresent(this.byText('OK'), 1500);
-      } else if (
-        src.includes('Health Connect') ||
-        src.includes('Permission required') ||
-        src.includes('Step data access')
-      ) {
-        for (const label of ['Not now', 'NOT NOW', 'OK']) {
-          if (await this.tapIfPresent(this.byText(label), 1200)) {
+      if (activity.includes('PopupActivity')) {
+        for (const label of ['Not now', 'NOT NOW', 'OK', 'Got it', 'Continue']) {
+          if (await this.tapIfPresent(this.byText(label), 1000)) {
             acted = true;
             break;
+          }
+        }
+      } else {
+        const src = await driver.getPageSource();
+        if (
+          src.includes('Health Connect') ||
+          src.includes('Permission required') ||
+          src.includes('Step data access')
+        ) {
+          for (const label of ['Not now', 'NOT NOW', 'OK']) {
+            if (await this.tapIfPresent(this.byText(label), 1000)) {
+              acted = true;
+              break;
+            }
           }
         }
       }
